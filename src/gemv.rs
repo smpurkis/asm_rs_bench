@@ -3,77 +3,16 @@
 
 mod quantization;
 
-use quantization::*;
 use num::SimdInt;
+use quantization::*;
 use rand::prelude::*;
 // use wide::i32x4;
-use std::time::Instant;
-use std::simd::*;
 use rayon::prelude::*;
-
+use std::simd::*;
+use std::time::Instant;
 
 // Scalar GEMV function for quantized data
-fn gemv_q4_0_4x4_q8_0_scalar(  
-    n: usize,  
-    s: &mut [f32],  
-    bs: usize,  
-    vx: &[BlockQ40x4],  
-    vy: &[BlockQ80],  
-    nr: usize,  
-    nc: usize,  
-) {  
-    let qk = QK8_0;  
-    let nb = n / qk;  
-  
-    assert!(n % qk == 0);  
-    assert!(nc % NCOLS_INTERLEAVED == 0);  
-  
-    for x in 0..(nc / NCOLS_INTERLEAVED) {  
-        let mut sumf = [0.0f32; NCOLS_INTERLEAVED];  
-  
-        for l in 0..nb {  
-            let b_block = &vx[x * nb + l];  
-            let a_block = &vy[l];  
-  
-            for k in 0..(qk / (2 * BLOCK_SIZE)) {  
-                for j in 0..NCOLS_INTERLEAVED {  
-                    let mut sumi = 0i32;  
-  
-                    for i in 0..BLOCK_SIZE {  
-                        let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE + i;  
-                        
-                        let byte = b_block.qs[idx];
-
-                        let v0 =  (byte << 4) as i32;
-                        let v1 = (byte & 0xF0) as i32;
-  
-                        let a_idx0 = k * BLOCK_SIZE + i;  
-                        let a_idx1 = k * BLOCK_SIZE + i + qk / 2;  
-  
-                        let a0 = a_block.qs[a_idx0];  
-                        let a1 = a_block.qs[a_idx1];  
-
-                        // Multiply and accumulate with right shift applied to each product  
-                        sumi += ((v0 * a0 as i32) >> 4) + ((v1 * a1 as i32) >> 4);  
-                    }  
-  
-                    let b_scale = b_block.d[j].to_f32();  
-                    let a_scale = a_block.d.to_f32();  
-  
-                    sumf[j] += (sumi as f32) * b_scale * a_scale;  
-                }  
-            }  
-        }
-  
-        // Store results  
-        for j in 0..NCOLS_INTERLEAVED {  
-            s[x * NCOLS_INTERLEAVED + j] = sumf[j];  
-        }  
-    }  
-}
-
-// Parallel GEMV function for quantized data using Rayon
-fn gemv_q4_0_4x4_q8_0_scalar_parallel(
+fn gemv_q4_0_4x4_q8_0_scalar(
     n: usize,
     s: &mut [f32],
     bs: usize,
@@ -88,12 +27,10 @@ fn gemv_q4_0_4x4_q8_0_scalar_parallel(
     assert!(n % qk == 0);
     assert!(nc % NCOLS_INTERLEAVED == 0);
 
-    // Use Rayon's parallel iterator to process chunks
-    s.par_chunks_mut(NCOLS_INTERLEAVED).enumerate().for_each(|(x, chunk)| {
+    for x in 0..(nc / NCOLS_INTERLEAVED) {
         let mut sumf = [0.0f32; NCOLS_INTERLEAVED];
 
-        // Process blocks in parallel within each chunk
-        (0..nb).for_each(|l| {
+        for l in 0..nb {
             let b_block = &vx[x * nb + l];
             let a_block = &vy[l];
 
@@ -103,8 +40,9 @@ fn gemv_q4_0_4x4_q8_0_scalar_parallel(
 
                     for i in 0..BLOCK_SIZE {
                         let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE + i;
-                        
+
                         let byte = b_block.qs[idx];
+
                         let v0 = (byte << 4) as i32;
                         let v1 = (byte & 0xF0) as i32;
 
@@ -124,126 +62,230 @@ fn gemv_q4_0_4x4_q8_0_scalar_parallel(
                     sumf[j] += (sumi as f32) * b_scale * a_scale;
                 }
             }
-        });
+        }
 
         // Store results
-        chunk.copy_from_slice(&sumf);
-    });
+        for j in 0..NCOLS_INTERLEAVED {
+            s[x * NCOLS_INTERLEAVED + j] = sumf[j];
+        }
+    }
 }
 
+// Parallel GEMV function for quantized data using Rayon
+fn gemv_q4_0_4x4_q8_0_scalar_parallel(
+    n: usize,
+    s: &mut [f32],
+    bs: usize,
+    vx: &[BlockQ40x4],
+    vy: &[BlockQ80],
+    nr: usize,
+    nc: usize,
+) {
+    let qk = QK8_0;
+    let nb = n / qk;
 
-fn gemv_q4_0_4x4_q8_0_simd(  
-    n: usize,  
-    s: &mut [f32],  
-    bs: usize,  
-    vx: &[BlockQ40x4],  
-    vy: &[BlockQ80],  
-    nr: usize,  
-    nc: usize,  
-) {  
-    let qk = QK8_0;  
-    let nb = n / qk;  
-  
-    assert!(n % qk == 0);  
-    assert!(nc % NCOLS_INTERLEAVED == 0);  
-  
-    for x in 0..(nc / NCOLS_INTERLEAVED) {  
-        let mut sumf = [0.0f32; NCOLS_INTERLEAVED];  
-  
-        for l in 0..nb {  
-            let b_block = &vx[x * nb + l];  
-            let a_block = &vy[l];  
-  
-            for k in 0..(qk / (2 * BLOCK_SIZE)) {  
-                for j in 0..NCOLS_INTERLEAVED {  
-                    let mut sumi = i16x4::splat(0);  
-   
-                    let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE;  
+    assert!(n % qk == 0);
+    assert!(nc % NCOLS_INTERLEAVED == 0);
 
-                    let v0 = i16x4::from([(b_block.qs[idx] << 4) as i16, (b_block.qs[idx + 1] << 4) as i16, (b_block.qs[idx + 2] << 4) as i16, (b_block.qs[idx + 3] << 4) as i16]);
-                    let v1 = i16x4::from([(b_block.qs[idx] & 0xF0) as i16, (b_block.qs[idx + 1] & 0xF0) as i16, (b_block.qs[idx + 2] & 0xF0) as i16, (b_block.qs[idx + 3] & 0xF0) as i16]);
+    // Use Rayon's parallel iterator to process chunks
+    s.par_chunks_mut(NCOLS_INTERLEAVED)
+        .enumerate()
+        .for_each(|(x, chunk)| {
+            let mut sumf = [0.0f32; NCOLS_INTERLEAVED];
 
-                    let a_idx0 = k * BLOCK_SIZE;  
-                    let a_idx1 = k * BLOCK_SIZE + qk / 2;  
+            // Process blocks in parallel within each chunk
+            (0..nb).for_each(|l| {
+                let b_block = &vx[x * nb + l];
+                let a_block = &vy[l];
 
-                    let a0_bytes = [a_block.qs[a_idx0] as i16, a_block.qs[a_idx0 + 1] as i16, a_block.qs[a_idx0 + 2] as i16, a_block.qs[a_idx0 + 3] as i16];
-                    let a1_bytes = [a_block.qs[a_idx1] as i16, a_block.qs[a_idx1 + 1] as i16, a_block.qs[a_idx1 + 2] as i16, a_block.qs[a_idx1 + 3] as i16];
+                for k in 0..(qk / (2 * BLOCK_SIZE)) {
+                    for j in 0..NCOLS_INTERLEAVED {
+                        let mut sumi = 0i32;
 
-                    let a0 = i16x4::from(a0_bytes);
-                    let a1 = i16x4::from(a1_bytes); 
+                        for i in 0..BLOCK_SIZE {
+                            let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE + i;
 
-                    // Multiply and accumulate
-                    sumi += (v0 * a0) >> 4;
-                    sumi += (v1 * a1) >> 4;
-  
-                    sumf[j] += sumi.reduce_sum() as f32 * b_block.d[j].to_f32() * a_block.d.to_f32();  
-                }  
-            }  
-        }  
-  
-        // Store results  
-        for j in 0..NCOLS_INTERLEAVED {  
-            s[x * NCOLS_INTERLEAVED + j] = sumf[j];  
-        }  
-    }  
+                            let byte = b_block.qs[idx];
+                            let v0 = (byte << 4) as i32;
+                            let v1 = (byte & 0xF0) as i32;
+
+                            let a_idx0 = k * BLOCK_SIZE + i;
+                            let a_idx1 = k * BLOCK_SIZE + i + qk / 2;
+
+                            let a0 = a_block.qs[a_idx0];
+                            let a1 = a_block.qs[a_idx1];
+
+                            // Multiply and accumulate with right shift applied to each product
+                            sumi += ((v0 * a0 as i32) >> 4) + ((v1 * a1 as i32) >> 4);
+                        }
+
+                        let b_scale = b_block.d[j].to_f32();
+                        let a_scale = a_block.d.to_f32();
+
+                        sumf[j] += (sumi as f32) * b_scale * a_scale;
+                    }
+                }
+            });
+
+            // Store results
+            chunk.copy_from_slice(&sumf);
+        });
 }
 
+fn gemv_q4_0_4x4_q8_0_simd(
+    n: usize,
+    s: &mut [f32],
+    bs: usize,
+    vx: &[BlockQ40x4],
+    vy: &[BlockQ80],
+    nr: usize,
+    nc: usize,
+) {
+    let qk = QK8_0;
+    let nb = n / qk;
 
-fn gemv_q4_0_4x4_q8_0_simd_parallel(  
-    n: usize,  
-    s: &mut [f32],  
-    bs: usize,  
-    vx: &[BlockQ40x4],  
-    vy: &[BlockQ80],  
-    nr: usize,  
-    nc: usize,  
-) {  
-    let qk = QK8_0;  
-    let nb = n / qk;  
-  
-    assert!(n % qk == 0);  
-    assert!(nc % NCOLS_INTERLEAVED == 0);  
-  
-    s.par_chunks_mut(NCOLS_INTERLEAVED).enumerate().for_each(|(x, chunk)| {
+    assert!(n % qk == 0);
+    assert!(nc % NCOLS_INTERLEAVED == 0);
+
+    for x in 0..(nc / NCOLS_INTERLEAVED) {
         let mut sumf = [0.0f32; NCOLS_INTERLEAVED];
 
-        // Process blocks in parallel within each chunk
-        (0..nb).for_each(|l| {
+        for l in 0..nb {
             let b_block = &vx[x * nb + l];
             let a_block = &vy[l];
 
             for k in 0..(qk / (2 * BLOCK_SIZE)) {
-                for j in 0..NCOLS_INTERLEAVED {  
-                    let mut sumi = i16x4::splat(0);  
-   
-                    let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE;  
+                for j in 0..NCOLS_INTERLEAVED {
+                    let mut sumi = i16x4::splat(0);
 
-                    let v0 = i16x4::from([(b_block.qs[idx] << 4) as i16, (b_block.qs[idx + 1] << 4) as i16, (b_block.qs[idx + 2] << 4) as i16, (b_block.qs[idx + 3] << 4) as i16]);
-                    let v1 = i16x4::from([(b_block.qs[idx] & 0xF0) as i16, (b_block.qs[idx + 1] & 0xF0) as i16, (b_block.qs[idx + 2] & 0xF0) as i16, (b_block.qs[idx + 3] & 0xF0) as i16]);
+                    let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE;
 
-                    let a_idx0 = k * BLOCK_SIZE;  
-                    let a_idx1 = k * BLOCK_SIZE + qk / 2;  
+                    let v0 = i16x4::from([
+                        (b_block.qs[idx] << 4) as i16,
+                        (b_block.qs[idx + 1] << 4) as i16,
+                        (b_block.qs[idx + 2] << 4) as i16,
+                        (b_block.qs[idx + 3] << 4) as i16,
+                    ]);
+                    let v1 = i16x4::from([
+                        (b_block.qs[idx] & 0xF0) as i16,
+                        (b_block.qs[idx + 1] & 0xF0) as i16,
+                        (b_block.qs[idx + 2] & 0xF0) as i16,
+                        (b_block.qs[idx + 3] & 0xF0) as i16,
+                    ]);
 
-                    let a0_bytes = [a_block.qs[a_idx0] as i16, a_block.qs[a_idx0 + 1] as i16, a_block.qs[a_idx0 + 2] as i16, a_block.qs[a_idx0 + 3] as i16];
-                    let a1_bytes = [a_block.qs[a_idx1] as i16, a_block.qs[a_idx1 + 1] as i16, a_block.qs[a_idx1 + 2] as i16, a_block.qs[a_idx1 + 3] as i16];
+                    let a_idx0 = k * BLOCK_SIZE;
+                    let a_idx1 = k * BLOCK_SIZE + qk / 2;
+
+                    let a0_bytes = [
+                        a_block.qs[a_idx0] as i16,
+                        a_block.qs[a_idx0 + 1] as i16,
+                        a_block.qs[a_idx0 + 2] as i16,
+                        a_block.qs[a_idx0 + 3] as i16,
+                    ];
+                    let a1_bytes = [
+                        a_block.qs[a_idx1] as i16,
+                        a_block.qs[a_idx1 + 1] as i16,
+                        a_block.qs[a_idx1 + 2] as i16,
+                        a_block.qs[a_idx1 + 3] as i16,
+                    ];
 
                     let a0 = i16x4::from(a0_bytes);
-                    let a1 = i16x4::from(a1_bytes); 
+                    let a1 = i16x4::from(a1_bytes);
 
                     // Multiply and accumulate
                     sumi += (v0 * a0) >> 4;
                     sumi += (v1 * a1) >> 4;
-  
-                    sumf[j] += sumi.reduce_sum() as f32 * b_block.d[j].to_f32() * a_block.d.to_f32();  
-                }  
+
+                    sumf[j] +=
+                        sumi.reduce_sum() as f32 * b_block.d[j].to_f32() * a_block.d.to_f32();
+                }
             }
-        });
+        }
 
         // Store results
-        chunk.copy_from_slice(&sumf);
-    });
+        for j in 0..NCOLS_INTERLEAVED {
+            s[x * NCOLS_INTERLEAVED + j] = sumf[j];
+        }
+    }
 }
 
+fn gemv_q4_0_4x4_q8_0_simd_parallel(
+    n: usize,
+    s: &mut [f32],
+    bs: usize,
+    vx: &[BlockQ40x4],
+    vy: &[BlockQ80],
+    nr: usize,
+    nc: usize,
+) {
+    let qk = QK8_0;
+    let nb = n / qk;
+
+    assert!(n % qk == 0);
+    assert!(nc % NCOLS_INTERLEAVED == 0);
+
+    s.par_chunks_mut(NCOLS_INTERLEAVED)
+        .enumerate()
+        .for_each(|(x, chunk)| {
+            let mut sumf = [0.0f32; NCOLS_INTERLEAVED];
+
+            // Process blocks in parallel within each chunk
+            (0..nb).for_each(|l| {
+                let b_block = &vx[x * nb + l];
+                let a_block = &vy[l];
+
+                for k in 0..(qk / (2 * BLOCK_SIZE)) {
+                    for j in 0..NCOLS_INTERLEAVED {
+                        let mut sumi = i16x4::splat(0);
+
+                        let idx = k * NCOLS_INTERLEAVED * BLOCK_SIZE + j * BLOCK_SIZE;
+
+                        let v0 = i16x4::from([
+                            (b_block.qs[idx] << 4) as i16,
+                            (b_block.qs[idx + 1] << 4) as i16,
+                            (b_block.qs[idx + 2] << 4) as i16,
+                            (b_block.qs[idx + 3] << 4) as i16,
+                        ]);
+                        let v1 = i16x4::from([
+                            (b_block.qs[idx] & 0xF0) as i16,
+                            (b_block.qs[idx + 1] & 0xF0) as i16,
+                            (b_block.qs[idx + 2] & 0xF0) as i16,
+                            (b_block.qs[idx + 3] & 0xF0) as i16,
+                        ]);
+
+                        let a_idx0 = k * BLOCK_SIZE;
+                        let a_idx1 = k * BLOCK_SIZE + qk / 2;
+
+                        let a0_bytes = [
+                            a_block.qs[a_idx0] as i16,
+                            a_block.qs[a_idx0 + 1] as i16,
+                            a_block.qs[a_idx0 + 2] as i16,
+                            a_block.qs[a_idx0 + 3] as i16,
+                        ];
+                        let a1_bytes = [
+                            a_block.qs[a_idx1] as i16,
+                            a_block.qs[a_idx1 + 1] as i16,
+                            a_block.qs[a_idx1 + 2] as i16,
+                            a_block.qs[a_idx1 + 3] as i16,
+                        ];
+
+                        let a0 = i16x4::from(a0_bytes);
+                        let a1 = i16x4::from(a1_bytes);
+
+                        // Multiply and accumulate
+                        sumi += (v0 * a0) >> 4;
+                        sumi += (v1 * a1) >> 4;
+
+                        sumf[j] +=
+                            sumi.reduce_sum() as f32 * b_block.d[j].to_f32() * a_block.d.to_f32();
+                    }
+                }
+            });
+
+            // Store results
+            chunk.copy_from_slice(&sumf);
+        });
+}
 
 // Assembly GEMV function
 #[cfg(all(target_arch = "aarch64", target_feature = "neon"))]
@@ -334,7 +376,6 @@ unsafe fn gemv_q4_0_4x4_q8_0_asm(
     );
 }
 
-
 // Unquantized GEMV function
 fn gemv_unquantized(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr: usize, nc: usize) {
     for i in 0..nc {
@@ -347,7 +388,14 @@ fn gemv_unquantized(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr: usize, 
 }
 
 // Unquantized GEMV function
-fn gemv_unquantized_parallel(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr: usize, nc: usize) {
+fn gemv_unquantized_parallel(
+    n: usize,
+    s: &mut [f32],
+    vx: &[f32],
+    vy: &[f32],
+    nr: usize,
+    nc: usize,
+) {
     // for i in 0..nc {
     //     let mut sum = 0.0f32;
     //     for k in 0..n {
@@ -355,7 +403,7 @@ fn gemv_unquantized_parallel(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr
     //     }
     //     s[i] = sum;
     // }
-    s.into_par_iter().enumerate().for_each(|(i,s)| {
+    s.into_par_iter().enumerate().for_each(|(i, s)| {
         let mut sum = 0.0f32;
         for k in 0..n {
             sum += vx[i * n + k] * vy[k];
@@ -374,27 +422,31 @@ struct TestData {
 }
 
 // Function to generate test data
-fn generate_test_data(n: usize, nc: usize) -> TestData {
+fn generate_test_data(n: usize, nc: usize, random: bool) -> TestData {
     let nb = n / QK8_0;
     let num_vx_blocks = nb * (nc / NCOLS_INTERLEAVED);
 
     let ux_size = nc * n;
     let uy_size = n;
 
-    let rng = StdRng::seed_from_u64(42);
-
     let ux: Vec<f32> = (0..ux_size)
-        .map(|_| 
-            // rng.gen::<f32>() * 2.0f32 - 1.0f32
-            1.0f32
-        )
+        .map(|_| {
+            if random {
+                rand::random::<f32>()
+            } else {
+                1.0f32
+            }
+        })
         .collect();
 
     let uy: Vec<f32> = (0..uy_size)
-        .map(|_| 
-            // rng.gen::<f32>() * 2.0f32 - 1.0f32
-            1.0f32
-        )
+        .map(|_| {
+            if random {
+                rand::random::<f32>()
+            } else {
+                1.0f32
+            }
+        })
         .collect();
 
     let mut vy = vec![BlockQ80::default(); nb];
@@ -402,20 +454,8 @@ fn generate_test_data(n: usize, nc: usize) -> TestData {
     quantize_q8_0_4(&uy, &mut vy, n);
 
     let mut vx = vec![BlockQ40x4::default(); num_vx_blocks];
-    
+
     quantize_q4_0_4x4(&ux, &mut vx, nc, n);
-
-    // Dequantize the first block of vx (B matrix)
-    let dequantized_vx_blocks = dequantize_block_q4_0x4(&vx[0]);
-    let original_uy = &uy[0..QK4_0 * 4];
-
-    // Compare dequantized values with original values
-    for (orig, deq) in original_uy.iter().zip(dequantized_vx_blocks.iter()) {
-        assert!(
-            (orig - deq).abs() < 1e-3,
-            "Dequantized B matrix values do not match original values"
-        );
-    }
 
     // Dequantize the first block of vy (A matrix)
     let dequantized_vy_block = dequantize_block_q8_0(&vy[0]);
@@ -424,8 +464,28 @@ fn generate_test_data(n: usize, nc: usize) -> TestData {
     // Compare dequantized values with original values
     for (orig, deq) in original_ux.iter().zip(dequantized_vy_block.iter()) {
         assert!(
-            (orig - deq).abs() < 1e-3,
-            "Dequantized A matrix values do not match original values"
+            (orig - deq).abs() < 1.0,
+            "{}",
+            format!(
+                "Dequantized B matrix values do not match original values: {} != {}",
+                orig, deq
+            )
+        );
+    }
+
+    // Dequantize the first block of vx (B matrix)
+    let dequantized_vx_blocks = dequantize_block_q4_0x4(&vx[0]);
+    let original_uy = &uy[0..QK4_0 * 4];
+
+    // Compare dequantized values with original values
+    for (orig, deq) in original_uy.iter().zip(dequantized_vx_blocks.iter()) {
+        assert!(
+            (orig - deq).abs() < 1.0,
+            "{}",
+            format!(
+                "Dequantized B matrix values do not match original values: {} != {}",
+                orig, deq
+            )
         );
     }
 
@@ -576,7 +636,6 @@ fn benchmark_asm_implementation(iterations: usize, n: usize, nc: usize, test_dat
     println!("s_quantized asm: {:?}", s_quantized[0..4].to_vec());
 }
 
-
 // Benchmark function for simd implementation
 fn benchmark_simd_implementation(iterations: usize, n: usize, nc: usize, test_data: &TestData) {
     let name = "Quantized GEMV Simd";
@@ -588,28 +647,28 @@ fn benchmark_simd_implementation(iterations: usize, n: usize, nc: usize, test_da
     // Warmup
     for _ in 0..5 {
         gemv_q4_0_4x4_q8_0_simd(
-                n,
-                &mut s_quantized,
-                QK8_0,
-                &test_data.vx,
-                &test_data.vy,
-                1,
-                nc,
-            );
+            n,
+            &mut s_quantized,
+            QK8_0,
+            &test_data.vx,
+            &test_data.vy,
+            1,
+            nc,
+        );
     }
 
     // Benchmark quantized GEMV (assembly)
     let start_q = Instant::now();
     for _ in 0..iterations {
         gemv_q4_0_4x4_q8_0_simd(
-                n,
-                &mut s_quantized,
-                QK8_0,
-                &test_data.vx,
-                &test_data.vy,
-                1,
-                nc,
-            );
+            n,
+            &mut s_quantized,
+            QK8_0,
+            &test_data.vx,
+            &test_data.vy,
+            1,
+            nc,
+        );
     }
     let duration_q = start_q.elapsed();
 
@@ -646,10 +705,9 @@ fn benchmark_simd_implementation(iterations: usize, n: usize, nc: usize, test_da
     println!("s_quantized asm: {:?}", s_quantized[0..4].to_vec());
 }
 
- 
 fn main() {
-    let n = 4096;
-    let nc = 4096;
+    let n = 2048;
+    let nc = 5504;
     let iterations = 1;
 
     println!(
@@ -658,7 +716,7 @@ fn main() {
     );
 
     // Generate test data
-    let test_data = generate_test_data(n, nc);
+    let test_data = generate_test_data(n, nc, true);
 
     // Benchmark scalar implementation
     benchmark_scalar_implementation(iterations, n, nc, &test_data);

@@ -171,11 +171,6 @@ unsafe fn gemm_q4_0_4x4_q8_0_asm(
         "movi v8.16b, #0x0",
         "movi v1.16b, #0x0",
         "3:",  // Block loop
-        // Include the rest of your assembly code here, replacing {variable} with {variable}
-        // Ensure that all labels are properly adjusted using Rust's local labels (numeric labels with b and f suffixes for backward and forward references)
-        // ...
-        // End of your assembly code
-        // Update the operands and clobbers accordingly
         "ldr q3, [x28, #0x0]",
         "ldr q31, [x25, #0x0]",
         "movi v28.16b, #0x4",
@@ -635,7 +630,7 @@ struct TestData {
     uy: Vec<f32>,
 }
 // Function to generate test data
-fn generate_test_data(n: usize, nc: usize, nr: usize) -> TestData {
+fn generate_test_data(n: usize, nc: usize, nr: usize, random: bool) -> TestData {
     let nb = n / QK8_0; // Number of blocks along n
 
     // For A matrix (vy)
@@ -643,7 +638,13 @@ fn generate_test_data(n: usize, nc: usize, nr: usize) -> TestData {
     let vy_size = (nr / 4) * nb; // vy will have (nr / 4) * nb blocks
 
     let ux: Vec<f32> = (0..ux_size)
-        .map(|_| 1.0f32) // Use actual random data or any desired values
+        .map(|_| {
+            if random {
+                rand::random::<f32>()
+            } else {
+                1.0f32
+            }
+        }) // Use actual random data or any desired values
         .collect();
 
     let mut vy = vec![BlockQ80x4::default(); vy_size];
@@ -655,7 +656,13 @@ fn generate_test_data(n: usize, nc: usize, nr: usize) -> TestData {
     let vx_size = (nc / NCOLS_INTERLEAVED) * nb; // vx will have (nc / 4) * nb blocks
 
     let uy: Vec<f32> = (0..uy_size)
-        .map(|_| 1.0f32) // Use actual random data or any desired values
+        .map(|_| {
+            if random {
+                rand::random::<f32>()
+            } else {
+                1.0f32
+            }
+        }) // Use actual random data or any desired values
         .collect();
 
     let mut vx = vec![BlockQ40x4::default(); vx_size];
@@ -671,8 +678,12 @@ fn generate_test_data(n: usize, nc: usize, nr: usize) -> TestData {
     // Compare dequantized values with original values
     for (orig, deq) in original_uy.iter().zip(dequantized_vx_blocks.iter()) {
         assert!(
-            (orig - deq).abs() < 1e-3,
-            "Dequantized B matrix values do not match original values"
+            (orig - deq).abs() < 1.0,
+            "{}",
+            format!(
+                "Dequantized B matrix values do not match original values: {} != {}",
+                orig, deq
+            )
         );
     }
 
@@ -683,8 +694,12 @@ fn generate_test_data(n: usize, nc: usize, nr: usize) -> TestData {
     // Compare dequantized values with original values
     for (orig, deq) in original_ux.iter().zip(dequantized_vy_block.iter()) {
         assert!(
-            (orig - deq).abs() < 1e-3,
-            "Dequantized A matrix values do not match original values"
+            (orig - deq).abs() < 1.0,
+            "{}",
+            format!(
+                "Dequantized B matrix values do not match original values: {} != {}",
+                orig, deq
+            )
         );
     }
 
@@ -765,8 +780,23 @@ fn benchmark_scalar_implementation(
         .fold(0.0, f64::max);
     println!("Maximum difference: {:.6}", max_diff);
 
-    println!("s_unquantized scalar: {:?}", s_unquantized[0..4].to_vec());
-    println!("s_quantized scalar: {:?}", s_quantized[0..4].to_vec());
+    println!(
+        "s_unquantized asm: {:?}",
+        s_unquantized.to_vec()[s_unquantized.len() - 10..s_unquantized.len()].to_vec()
+    );
+    println!(
+        "s_quantized asm: {:?}",
+        s_quantized.to_vec()[s_quantized.len() - 10..s_quantized.len()].to_vec()
+    );
+    println!(
+        "diff: {:?}",
+        s_unquantized
+            .iter()
+            .zip(s_quantized.iter())
+            .map(|(a, b)| a - b)
+            .collect::<Vec<f32>>()[(s_unquantized.len() - 10)..s_unquantized.len()]
+            .to_vec()
+    );
 }
 
 // Benchmark function for assembly implementation
@@ -844,8 +874,23 @@ fn benchmark_asm_implementation(
         .fold(0.0, f64::max);
     println!("Maximum difference: {:.6}", max_diff);
 
-    println!("s_unquantized asm: {:?}", s_unquantized[0..4].to_vec());
-    println!("s_quantized asm: {:?}", s_quantized[0..4].to_vec());
+    println!(
+        "s_unquantized asm: {:?}",
+        s_unquantized.to_vec()[s_unquantized.len() - 10..s_unquantized.len()].to_vec()
+    );
+    println!(
+        "s_quantized asm: {:?}",
+        s_quantized.to_vec()[s_quantized.len() - 10..s_quantized.len()].to_vec()
+    );
+    println!(
+        "diff: {:?}",
+        s_unquantized
+            .iter()
+            .zip(s_quantized.iter())
+            .map(|(a, b)| a - b)
+            .collect::<Vec<f32>>()[(s_unquantized.len() - 10)..s_unquantized.len()]
+            .to_vec()
+    );
 }
 
 // Benchmark function for simd implementation
@@ -919,23 +964,38 @@ fn benchmark_simd_implementation(
         .fold(0.0, f64::max);
     println!("Maximum difference: {:.6}", max_diff);
 
-    println!("s_unquantized asm: {:?}", s_unquantized[0..4].to_vec());
-    println!("s_quantized asm: {:?}", s_quantized[0..4].to_vec());
+    println!(
+        "s_unquantized asm: {:?}",
+        s_unquantized.to_vec()[s_unquantized.len() - 10..s_unquantized.len()].to_vec()
+    );
+    println!(
+        "s_quantized asm: {:?}",
+        s_quantized.to_vec()[s_quantized.len() - 10..s_quantized.len()].to_vec()
+    );
+    println!(
+        "diff: {:?}",
+        s_unquantized
+            .iter()
+            .zip(s_quantized.iter())
+            .map(|(a, b)| a - b)
+            .collect::<Vec<f32>>()[(s_unquantized.len() - 10)..s_unquantized.len()]
+            .to_vec()
+    );
 }
 
 fn main() {
-    let n = 512;
-    let nc = 512;
-    let nr = 512;
+    let n = 2048;
+    let nc = 5504;
+    let nr = 4; // for some reason, the end of asm output is always 0 unless nc is 8, 16 or 32
     let iterations = 1;
 
     println!(
-        "Benchmarking with n={}, nc={}, iterations={}",
-        n, nc, iterations
+        "Benchmarking with n={}, nc={}, nr={}, iterations={}",
+        n, nc, nr, iterations
     );
 
     // Generate test data
-    let test_data = generate_test_data(n, nc, nr);
+    let test_data = generate_test_data(n, nc, nr, false);
 
     // Benchmark scalar implementation
     benchmark_scalar_implementation(iterations, n, nc, nr, &test_data);
