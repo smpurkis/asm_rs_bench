@@ -127,6 +127,7 @@ unsafe fn gemm_q4_0_4x4_q8_0_asm(
     let qk = QK8_0;
     let nb = n / qk;
     let res_stride = bs * std::mem::size_of::<f32>();
+    println!("res_stride: {}", res_stride);
 
     assert!(n % qk == 0);
     assert!(nr % 4 == 0);
@@ -622,6 +623,7 @@ fn gemm_unquantized_parallel(
 }
 
 // Struct to hold test data
+#[derive(Clone, Debug)]
 struct TestData {
     vx: Vec<BlockQ40x4>,
     vy: Vec<BlockQ80x4>,
@@ -715,6 +717,7 @@ fn benchmark_scalar_implementation(
     n: usize,
     nc: usize,
     nr: usize,
+    bs: usize,
     test_data: &TestData,
 ) {
     let name = "Quantized GEMM scalar";
@@ -723,26 +726,13 @@ fn benchmark_scalar_implementation(
     let mut s_quantized = vec![0.0f32; nc * nr];
     let mut s_unquantized = vec![0.0f32; nc * nr];
 
-    // Warmup
-    for _ in 0..5 {
-        gemm_q4_0_4x4_q8_0_scalar(
-            n,
-            &mut s_quantized,
-            QK8_0,
-            &test_data.vx,
-            &test_data.vy,
-            nr,
-            nc,
-        );
-    }
-
     // Benchmark quantized GEMV (scalar)
     let start_q = Instant::now();
     for _ in 0..iterations {
         gemm_q4_0_4x4_q8_0_scalar(
             n,
             &mut s_quantized,
-            QK8_0,
+            bs,
             &test_data.vx,
             &test_data.vy,
             nr,
@@ -805,6 +795,7 @@ fn benchmark_asm_implementation(
     n: usize,
     nc: usize,
     nr: usize,
+    bs: usize,
     test_data: &TestData,
 ) {
     let name = "Quantized GEMM assembly";
@@ -813,21 +804,6 @@ fn benchmark_asm_implementation(
     let mut s_quantized = vec![0.0f32; nc * nr];
     let mut s_unquantized = vec![0.0f32; nc * nr];
 
-    // Warmup
-    for _ in 0..5 {
-        unsafe {
-            gemm_q4_0_4x4_q8_0_asm(
-                n,
-                &mut s_quantized,
-                QK8_0,
-                &test_data.vx,
-                &test_data.vy,
-                nr,
-                nc,
-            );
-        }
-    }
-
     // Benchmark quantized GEMV (assembly)
     let start_q = Instant::now();
     for _ in 0..iterations {
@@ -835,7 +811,7 @@ fn benchmark_asm_implementation(
             gemm_q4_0_4x4_q8_0_asm(
                 n,
                 &mut s_quantized,
-                QK8_0,
+                bs,
                 &test_data.vx,
                 &test_data.vy,
                 nr,
@@ -891,6 +867,15 @@ fn benchmark_asm_implementation(
             .collect::<Vec<f32>>()[(s_unquantized.len() - 10)..s_unquantized.len()]
             .to_vec()
     );
+
+    // calculate how many in s_quantized are zero
+    let mut zero_count = 0;
+    for i in 0..s_quantized.len() {
+        if s_quantized[i] == 0.0 {
+            zero_count += 1;
+        }
+    }
+    println!("zero count: {}, out of: {}", zero_count, s_quantized.len());
 }
 
 // Benchmark function for simd implementation
@@ -899,6 +884,7 @@ fn benchmark_simd_implementation(
     n: usize,
     nc: usize,
     nr: usize,
+    bs: usize,
     test_data: &TestData,
 ) {
     let name = "Quantized GEMM Simd";
@@ -907,26 +893,13 @@ fn benchmark_simd_implementation(
     let mut s_quantized = vec![0.0f32; nc * nr];
     let mut s_unquantized = vec![0.0f32; nc * nr];
 
-    // Warmup
-    for _ in 0..5 {
-        gemm_q4_0_4x4_q8_0_simd(
-            n,
-            &mut s_quantized,
-            QK8_0,
-            &test_data.vx,
-            &test_data.vy,
-            nr,
-            nc,
-        );
-    }
-
     // Benchmark quantized GEMV (assembly)
     let start_q = Instant::now();
     for _ in 0..iterations {
         gemm_q4_0_4x4_q8_0_simd(
             n,
             &mut s_quantized,
-            QK8_0,
+            bs,
             &test_data.vx,
             &test_data.vy,
             nr,
@@ -984,9 +957,13 @@ fn benchmark_simd_implementation(
 }
 
 fn main() {
+    // let n = 2048;
+    // let nc = 1024;
+    // let nr = 4; // for some reason, the end of asm output is always 0 unless nc is 8, 16 or 32
     let n = 2048;
-    let nc = 5504;
-    let nr = 4; // for some reason, the end of asm output is always 0 unless nc is 8, 16 or 32
+    let nc = 2752;
+    let nr = 4;
+    let bs = nc;
     let iterations = 1;
 
     println!(
@@ -995,14 +972,16 @@ fn main() {
     );
 
     // Generate test data
-    let test_data = generate_test_data(n, nc, nr, false);
+    let test_data = generate_test_data(n, nc, nr, true);
+
+    // println!("{:?}", test_data);
 
     // Benchmark scalar implementation
-    benchmark_scalar_implementation(iterations, n, nc, nr, &test_data);
+    benchmark_scalar_implementation(iterations, n, nc, nr, bs, &test_data);
 
     // Benchmark assembly implementation
-    benchmark_asm_implementation(iterations, n, nc, nr, &test_data);
+    benchmark_asm_implementation(iterations, n, nc, nr, bs, &test_data);
 
     // Benchmark simd implementation
-    benchmark_simd_implementation(iterations, n, nc, nr, &test_data);
+    // benchmark_simd_implementation(iterations, n, nc, nr, bs, &test_data);
 }
