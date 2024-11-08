@@ -101,29 +101,6 @@ pub fn quantize_row_q4_0_ref(src: &[f32], dst: &mut BlockQ40, k: usize) {
     }
 }
 
-// Function to make BlockQ40x4 from BlockQ40's
-pub fn make_block_q4_0x4(
-    input: &[BlockQ40], // Expected to be of length at least 4
-    block_size_interleave: usize,
-    xor_mask: u8,
-) -> BlockQ40x4 {
-    let mut out = BlockQ40x4::default();
-
-    for i in 0..4 {
-        out.d[i] = input[i].d;
-    }
-
-    for i in 0..(QK4_0 * 2) {
-        let mut src_offset = (i / (4 * block_size_interleave)) * block_size_interleave;
-        let src_id = (i % (4 * block_size_interleave)) / block_size_interleave;
-        src_offset += i % block_size_interleave;
-
-        out.qs[i] = input[src_id].qs[src_offset] ^ xor_mask;
-    }
-
-    out
-}
-
 // Function to make BlockQ40x8 from BlockQ40's
 pub fn make_block_q4_0x8(
     input: &[BlockQ40], // Expected to be of length at least 8
@@ -139,6 +116,29 @@ pub fn make_block_q4_0x8(
     for i in 0..(QK4_0 * 4) {
         let mut src_offset = (i / (8 * block_size_interleave)) * block_size_interleave;
         let src_id = (i % (8 * block_size_interleave)) / block_size_interleave;
+        src_offset += i % block_size_interleave;
+
+        out.qs[i] = input[src_id].qs[src_offset] ^ xor_mask;
+    }
+
+    out
+}
+
+// Function to make BlockQ40x4 from BlockQ40's
+pub fn make_block_q4_0x4(
+    input: &[BlockQ40], // Expected to be of length at least 4
+    block_size_interleave: usize,
+    xor_mask: u8,
+) -> BlockQ40x4 {
+    let mut out = BlockQ40x4::default();
+
+    for i in 0..4 {
+        out.d[i] = input[i].d;
+    }
+
+    for i in 0..(QK4_0 * 2) {
+        let mut src_offset = (i / (4 * block_size_interleave)) * block_size_interleave;
+        let src_id = (i % (4 * block_size_interleave)) / block_size_interleave;
         src_offset += i % block_size_interleave;
 
         out.qs[i] = input[src_id].qs[src_offset] ^ xor_mask;
@@ -285,7 +285,7 @@ pub fn extract_block_q4_0x4(
     xor_mask: u8,
 ) -> [BlockQ40; 4] {
     let mut output = [BlockQ40::default(); 4];
-    for i in 0..4 {
+    for i in 0..block_size_interleave {
         output[i].d = block.d[i];
     }
     for i in 0..(QK4_0 * 2) {

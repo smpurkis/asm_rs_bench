@@ -1,17 +1,18 @@
-// main.rs
 #![feature(portable_simd)] // Enable std::arch module for intrinsics
+extern crate blas_sys;
+extern crate blis_src;
 
 mod quantization;
 
+use blas::dgemv;
+use blas_sys::sgemv_;
 use num::SimdInt;
 use quantization::*;
 use rand::prelude::*;
-// use wide::i32x4;
 use rayon::prelude::*;
 use std::simd::*;
 use std::time::Instant;
 
-// Scalar GEMV function for quantized data
 fn gemv_q4_0_4x4_q8_0_scalar(
     n: usize,
     s: &mut [f32],
@@ -387,6 +388,56 @@ fn gemv_unquantized(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr: usize, 
     }
 }
 
+// Unquantized GEMV function using OpenBLAS
+fn gemv_unquantized_openblas(
+    n: usize,
+    s: &mut [f64],
+    vx: &[f64],
+    vy: &[f64],
+    nr: usize,
+    nc: usize,
+) {
+    let alpha = 1.0;
+    let beta = 0.0;
+
+    unsafe {
+        dgemv(
+            b'N',      // trans: 'N' for no transpose
+            nc as i32, // m: number of rows
+            n as i32,  // n: number of columns
+            alpha,     // alpha
+            vx,        // matrix A
+            nc as i32, // lda: leading dimension of A
+            vy,        // vector x
+            1,         // incx: increment for x
+            beta,      // beta
+            s,         // vector y
+            1,         // incy: increment for y
+        );
+    }
+}
+
+// Unquantized GEMV function using OpenBLAS
+fn gemv_unquantized_blis(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr: usize, nc: usize) {
+    let alpha: f32 = 1.0;
+    let beta: f32 = 0.0;
+
+    unsafe {
+        sgemv_(
+            &{ b'N' } as *const u8, // trans: 'N' for no transpose
+            &(nc as i32),           // m: number of rows
+            &(n as i32),            // n: number of columns
+            &alpha,                 // alpha
+            vx.as_ptr(),            // matrix A
+            &(nc as i32),           // lda: leading dimension of A
+            vy.as_ptr(),            // vector x
+            &1,                     // incx: increment for x
+            &beta,                  // beta
+            s.as_mut_ptr(),         // vector y
+            &1,                     // incy: increment for y
+        );
+    }
+}
 // Unquantized GEMV function
 fn gemv_unquantized_parallel(
     n: usize,
@@ -396,13 +447,6 @@ fn gemv_unquantized_parallel(
     nr: usize,
     nc: usize,
 ) {
-    // for i in 0..nc {
-    //     let mut sum = 0.0f32;
-    //     for k in 0..n {
-    //         sum += vx[i * n + k] * vy[k];
-    //     }
-    //     s[i] = sum;
-    // }
     s.into_par_iter().enumerate().for_each(|(i, s)| {
         let mut sum = 0.0f32;
         for k in 0..n {
@@ -502,19 +546,6 @@ fn benchmark_scalar_implementation(iterations: usize, n: usize, nc: usize, test_
     let mut s_quantized = vec![0.0f32; nc];
     let mut s_unquantized = vec![0.0f32; nc];
 
-    // Warmup
-    for _ in 0..5 {
-        gemv_q4_0_4x4_q8_0_scalar(
-            n,
-            &mut s_quantized,
-            QK8_0,
-            &test_data.vx,
-            &test_data.vy,
-            1,
-            nc,
-        );
-    }
-
     // Benchmark quantized GEMV (scalar)
     let start_q = Instant::now();
     for _ in 0..iterations {
@@ -570,21 +601,6 @@ fn benchmark_asm_implementation(iterations: usize, n: usize, nc: usize, test_dat
     // Prepare variables
     let mut s_quantized = vec![0.0f32; nc];
     let mut s_unquantized = vec![0.0f32; nc];
-
-    // Warmup
-    for _ in 0..5 {
-        unsafe {
-            gemv_q4_0_4x4_q8_0_asm(
-                n,
-                &mut s_quantized,
-                QK8_0,
-                &test_data.vx,
-                &test_data.vy,
-                1,
-                nc,
-            );
-        }
-    }
 
     // Benchmark quantized GEMV (assembly)
     let start_q = Instant::now();
@@ -644,19 +660,6 @@ fn benchmark_simd_implementation(iterations: usize, n: usize, nc: usize, test_da
     let mut s_quantized = vec![0.0f32; nc];
     let mut s_unquantized = vec![0.0f32; nc];
 
-    // Warmup
-    for _ in 0..5 {
-        gemv_q4_0_4x4_q8_0_simd(
-            n,
-            &mut s_quantized,
-            QK8_0,
-            &test_data.vx,
-            &test_data.vy,
-            1,
-            nc,
-        );
-    }
-
     // Benchmark quantized GEMV (assembly)
     let start_q = Instant::now();
     for _ in 0..iterations {
@@ -701,13 +704,136 @@ fn benchmark_simd_implementation(iterations: usize, n: usize, nc: usize, test_da
         .fold(0.0, f64::max);
     println!("Maximum difference: {:.6}", max_diff);
 
-    println!("s_unquantized asm: {:?}", s_unquantized[0..4].to_vec());
-    println!("s_quantized asm: {:?}", s_quantized[0..4].to_vec());
+    println!("s_unquantized simd: {:?}", s_unquantized[0..4].to_vec());
+    println!("s_quantized simd: {:?}", s_quantized[0..4].to_vec());
+}
+
+// Benchmark function for OpenBLAS implementation
+fn benchmark_openblas_implementation(iterations: usize, n: usize, nc: usize, test_data: &TestData) {
+    let name = "Unquantized GEMV OpenBLAS";
+
+    // Prepare variables
+    let mut s_unquantized = vec![0.0f32; nc];
+
+    let mut s_unquantized_openblas = vec![0.0f64; nc];
+
+    let ux_openblas: Vec<f64> = test_data.ux.iter().map(|&x| x as f64).collect();
+    let uy_openblas: Vec<f64> = test_data.uy.iter().map(|&x| x as f64).collect();
+
+    // Benchmark unquantized GEMV (OpenBLAS)
+    let start_uq = Instant::now();
+    for _ in 0..iterations {
+        gemv_unquantized_openblas(
+            n,
+            &mut s_unquantized_openblas,
+            &ux_openblas,
+            &uy_openblas,
+            1,
+            nc,
+        );
+    }
+    let duration_uq_openblas = start_uq.elapsed();
+
+    // Benchmark unquantized GEMV
+    let start_uq = Instant::now();
+    for _ in 0..iterations {
+        gemv_unquantized(n, &mut s_unquantized, &test_data.ux, &test_data.uy, 1, nc);
+    }
+    let duration_uq = start_uq.elapsed();
+
+    println!();
+
+    println!(
+        "{} (OpenBLAS): {:.2} ms per iteration",
+        name,
+        (duration_uq_openblas.as_secs_f64() * 1000.0) / iterations as f64
+    );
+
+    println!(
+        "Unquantized GEMV (Unquantized): {:.2} ms per iteration",
+        (duration_uq.as_secs_f64() * 1000.0) / iterations as f64
+    );
+
+    println!("s_unquantized openblas: {:?}", s_unquantized[0..4].to_vec());
+
+    println!("Comparing outputs between openblas and unquantized GEMV:");
+    let max_diff = s_unquantized_openblas
+        .iter()
+        .zip(s_unquantized.iter())
+        .map(|(&a, &b)| (a as f32 - b).abs() as f64)
+        .fold(0.0, f64::max);
+    println!("Maximum difference: {:.6}", max_diff);
+
+    println!(
+        "s_unquantized openblas: {:?}",
+        s_unquantized_openblas[0..4].to_vec()
+    );
+    println!("s_unquantized normal: {:?}", s_unquantized[0..4].to_vec());
+}
+
+// Benchmark function for OpenBLAS implementation
+fn benchmark_blis_implementation(iterations: usize, n: usize, nc: usize, test_data: &TestData) {
+    let name = "Unquantized GEMV BLIS";
+
+    // Prepare variables
+    let mut s_unquantized = vec![0.0f32; nc];
+
+    let mut s_unquantized_blis = vec![0.0f32; nc];
+
+    // Benchmark unquantized GEMV (OpenBLAS)
+    let start_uq = Instant::now();
+    for _ in 0..iterations {
+        gemv_unquantized_blis(
+            n,
+            &mut s_unquantized_blis,
+            &test_data.ux,
+            &test_data.uy,
+            1,
+            nc,
+        );
+    }
+    let duration_uq_openblas = start_uq.elapsed();
+
+    // Benchmark unquantized GEMV
+    let start_uq = Instant::now();
+    for _ in 0..iterations {
+        gemv_unquantized(n, &mut s_unquantized, &test_data.ux, &test_data.uy, 1, nc);
+    }
+    let duration_uq = start_uq.elapsed();
+
+    println!();
+
+    println!(
+        "{} (blis): {:.2} ms per iteration",
+        name,
+        (duration_uq_openblas.as_secs_f64() * 1000.0) / iterations as f64
+    );
+
+    println!(
+        "Unquantized GEMV (Unquantized): {:.2} ms per iteration",
+        (duration_uq.as_secs_f64() * 1000.0) / iterations as f64
+    );
+
+    println!("s_unquantized openblas: {:?}", s_unquantized[0..4].to_vec());
+
+    println!("Comparing outputs between blis and unquantized GEMV:");
+    let max_diff = s_unquantized_blis
+        .iter()
+        .zip(s_unquantized.iter())
+        .map(|(&a, &b)| (a - b).abs() as f64)
+        .fold(0.0, f64::max);
+    println!("Maximum difference: {:.6}", max_diff);
+
+    println!(
+        "s_unquantized blis: {:?}",
+        s_unquantized_blis[0..4].to_vec()
+    );
+    println!("s_unquantized normal: {:?}", s_unquantized[0..4].to_vec());
 }
 
 fn main() {
-    let n = 2048;
-    let nc = 5504;
+    let n = 8192;
+    let nc = 8192;
     let iterations = 1;
 
     println!(
@@ -726,4 +852,10 @@ fn main() {
 
     // Benchmark simd implementation
     benchmark_simd_implementation(iterations, n, nc, &test_data);
+
+    // Benchmark OpenBLAS implementation
+    benchmark_openblas_implementation(iterations, n, nc, &test_data);
+
+    // Benchmark BLIS implementation
+    benchmark_blis_implementation(iterations, n, nc, &test_data);
 }
