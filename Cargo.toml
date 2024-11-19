@@ -23,3 +23,12 @@ path = "src/gemv.rs"
 [[bin]]
 name = "gemm"
 path = "src/gemm.rs"
+
+[[bin]]
+name = "gemm_old"
+path = "src/gemm_old.rs"
+
+
+[[bin]]
+name = "minimal_q8"
+path = "src/minimal_q8.rs"

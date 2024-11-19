@@ -9,59 +9,6 @@ use quantization::*;
 use rand::prelude::*;
 use std::time::Instant;
 
-fn gemm_q4_0_q8_0_scalar(
-    n: usize,
-    s: &mut [f32],
-    bs: usize,
-    vx: &[BlockQ4_0],
-    vy: &[BlockQ8_0],
-    nr: usize,
-    nc: usize,
-) {
-    let qk = QK8_0;
-    let nb = n / qk;
-
-    assert!(n % qk == 0);
-
-    // Process each row
-    for ir in 0..nr {
-        // Process each column
-        for ic in 0..nc {
-            let mut sum = 0.0f32;
-
-            // Process blocks of quantized values
-            for ib in 0..nb {
-                let block_x = &vx[ir * nb + ib];
-                let block_y = &vy[ic * nb + ib];
-
-                // Get scales for both blocks
-                let scale_x = block_x.d.to_f32();
-                let scale_y = block_y.d.to_f32();
-
-                // Process all values in the block
-                for i in 0..QK4_0 / 2 {
-                    // Extract two 4-bit values from each byte
-                    let x_byte = block_x.qs[i];
-                    let x_val0 = (x_byte & 0xF) as i8 - 8;
-                    let x_val1 = ((x_byte >> 4) & 0xF) as i8 - 8;
-
-                    // Get corresponding 8-bit values
-                    let y_val0 = block_y.qs[i * 2];
-                    let y_val1 = block_y.qs[i * 2 + 1];
-
-                    // Multiply values and accumulate with scaling
-                    sum += scale_x
-                        * scale_y
-                        * ((x_val0 as f32) * (y_val0 as f32) + (x_val1 as f32) * (y_val1 as f32));
-                }
-            }
-
-            // Store result
-            s[ir * bs + ic] = sum;
-        }
-    }
-}
-
 fn gemm_q8_0_q8_0_scalar(
     n: usize,
     s: &mut [f32],
@@ -113,83 +60,6 @@ fn gemm_unquantized(n: usize, s: &mut [f32], vx: &[f32], vy: &[f32], nr: usize, 
             }
         }
     }
-}
-
-fn benchmark_q4_implementation(
-    iterations: usize,
-    n: usize,
-    nc: usize,
-    nr: usize,
-    bs: usize,
-    test_data: &TestData,
-) {
-    let name = "Quantized GEMM q4";
-
-    // Prepare variables
-    let mut s_quantized = vec![0.0f32; nc * nr];
-    let mut s_unquantized = vec![0.0f32; nc * nr];
-
-    // Benchmark quantized GEMV (scalar)
-    let start_q = Instant::now();
-    for _ in 0..iterations {
-        gemm_q4_0_q8_0_scalar(
-            n,
-            &mut s_quantized,
-            bs,
-            &test_data.vx_40,
-            &test_data.vy_80,
-            nr,
-            nc,
-        );
-    }
-    let duration_q = start_q.elapsed();
-
-    // Benchmark unquantized GEMV
-    let start_uq = Instant::now();
-    for _ in 0..iterations {
-        gemm_unquantized(n, &mut s_unquantized, &test_data.ux, &test_data.uy, nr, nc);
-    }
-    let duration_uq = start_uq.elapsed();
-
-    println!();
-
-    println!(
-        "{} (Quantized): {:.2} ms per iteration",
-        name,
-        (duration_q.as_secs_f64() * 1000.0) / iterations as f64
-    );
-
-    println!(
-        "Unquantized GEMV (Unquantized): {:.2} ms per iteration",
-        (duration_uq.as_secs_f64() * 1000.0) / iterations as f64
-    );
-
-    // Compare outputs
-    println!("Comparing outputs between quantized and unquantized GEMM:");
-    let max_diff = s_quantized
-        .iter()
-        .zip(s_unquantized.iter())
-        .map(|(&a, &b)| (a - b).abs() as f64)
-        .fold(0.0, f64::max);
-    println!("Maximum difference: {:.6}", max_diff);
-
-    println!(
-        "s_unquantized q4: {:?}",
-        s_unquantized.to_vec()[s_unquantized.len() - 10..s_unquantized.len()].to_vec()
-    );
-    println!(
-        "s_quantized q4: {:?}",
-        s_quantized.to_vec()[s_quantized.len() - 10..s_quantized.len()].to_vec()
-    );
-    println!(
-        "diff: {:?}",
-        s_unquantized
-            .iter()
-            .zip(s_quantized.iter())
-            .map(|(a, b)| a - b)
-            .collect::<Vec<f32>>()[(s_unquantized.len() - 10)..s_unquantized.len()]
-            .to_vec()
-    );
 }
 
 fn benchmark_q8_implementation(
@@ -272,13 +142,11 @@ fn benchmark_q8_implementation(
 // Struct to hold test data
 #[derive(Clone, Debug)]
 struct TestData {
-    vx_40: Vec<BlockQ4_0>,
     vx_80: Vec<BlockQ8_0>,
     vy_80: Vec<BlockQ8_0>,
     ux: Vec<f32>,
     uy: Vec<f32>,
 }
-
 // Function to generate test data
 fn generate_test_data(n: usize, nc: usize, nr: usize, random: bool) -> TestData {
     // For A matrix (vy)
@@ -300,20 +168,17 @@ fn generate_test_data(n: usize, nc: usize, nr: usize, random: bool) -> TestData 
     let uy: Vec<f32> = (0..uy_size)
         .map(|_| {
             if random {
-                rng.gen_range(-0.5..0.5)
+                rand::random::<f32>() - 0.5
             } else {
                 1.0f32
             }
         }) // Use actual random data or any desired values
         .collect();
 
-    let vx_40 = quantize_f32_to_q4_0(&ux, n, nr);
-
     let vx_80 = quantize_f32_to_q8_0(&ux, n, nr);
     let vy_80 = quantize_f32_to_q8_0(&uy, n, nc);
 
     TestData {
-        vx_40,
         vx_80,
         vy_80,
         ux,
@@ -335,9 +200,6 @@ fn main() {
 
     // Generate test data
     let test_data = generate_test_data(n, nc, nr, true);
-
-    // benchmark q4
-    benchmark_q4_implementation(iterations, n, nc, nr, bs, &test_data);
 
     // benchmark q8
     benchmark_q8_implementation(iterations, n, nc, nr, bs, &test_data);

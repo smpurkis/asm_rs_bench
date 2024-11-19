@@ -17,8 +17,8 @@ fn gemv_q4_0_4x4_q8_0_scalar(
     n: usize,
     s: &mut [f32],
     bs: usize,
-    vx: &[BlockQ40x4],
-    vy: &[BlockQ80],
+    vx: &[BlockQ4_0x4],
+    vy: &[BlockQ8_0],
     nr: usize,
     nc: usize,
 ) {
@@ -77,8 +77,8 @@ fn gemv_q4_0_4x4_q8_0_scalar_parallel(
     n: usize,
     s: &mut [f32],
     bs: usize,
-    vx: &[BlockQ40x4],
-    vy: &[BlockQ80],
+    vx: &[BlockQ4_0x4],
+    vy: &[BlockQ8_0],
     nr: usize,
     nc: usize,
 ) {
@@ -137,8 +137,8 @@ fn gemv_q4_0_4x4_q8_0_simd(
     n: usize,
     s: &mut [f32],
     bs: usize,
-    vx: &[BlockQ40x4],
-    vy: &[BlockQ80],
+    vx: &[BlockQ4_0x4],
+    vy: &[BlockQ8_0],
     nr: usize,
     nc: usize,
 ) {
@@ -214,8 +214,8 @@ fn gemv_q4_0_4x4_q8_0_simd_parallel(
     n: usize,
     s: &mut [f32],
     bs: usize,
-    vx: &[BlockQ40x4],
-    vy: &[BlockQ80],
+    vx: &[BlockQ4_0x4],
+    vy: &[BlockQ8_0],
     nr: usize,
     nc: usize,
 ) {
@@ -294,8 +294,8 @@ unsafe fn gemv_q4_0_4x4_q8_0_asm(
     n: usize,
     s: &mut [f32],
     bs: usize,
-    vx: &[BlockQ40x4],
-    vy: &[BlockQ80],
+    vx: &[BlockQ4_0x4],
+    vy: &[BlockQ8_0],
     nr: usize,
     nc: usize,
 ) {
@@ -458,8 +458,8 @@ fn gemv_unquantized_parallel(
 
 // Struct to hold test data
 struct TestData {
-    vx: Vec<BlockQ40x4>,
-    vy: Vec<BlockQ80>,
+    vx: Vec<BlockQ4_0x4>,
+    vy: Vec<BlockQ8_0>,
     s: Vec<f32>,
     ux: Vec<f32>,
     uy: Vec<f32>,
@@ -476,7 +476,7 @@ fn generate_test_data(n: usize, nc: usize, random: bool) -> TestData {
     let ux: Vec<f32> = (0..ux_size)
         .map(|_| {
             if random {
-                rand::random::<f32>()
+                rand::random::<f32>() - 0.5
             } else {
                 1.0f32
             }
@@ -486,18 +486,18 @@ fn generate_test_data(n: usize, nc: usize, random: bool) -> TestData {
     let uy: Vec<f32> = (0..uy_size)
         .map(|_| {
             if random {
-                rand::random::<f32>()
+                rand::random::<f32>() - 0.5
             } else {
                 1.0f32
             }
         })
         .collect();
 
-    let mut vy = vec![BlockQ80::default(); nb];
+    let mut vy = vec![BlockQ8_0::default(); nb];
 
     quantize_q8_0_4(&uy, &mut vy, n);
 
-    let mut vx = vec![BlockQ40x4::default(); num_vx_blocks];
+    let mut vx = vec![BlockQ4_0x4::default(); num_vx_blocks];
 
     quantize_q4_0_4x4(&ux, &mut vx, nc, n);
 
@@ -832,8 +832,8 @@ fn benchmark_blis_implementation(iterations: usize, n: usize, nc: usize, test_da
 }
 
 fn main() {
-    let n = 8192;
-    let nc = 8192;
+    let n = 128;
+    let nc = 128;
     let iterations = 1;
 
     println!(
