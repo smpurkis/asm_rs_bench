@@ -815,52 +815,6 @@ bool verify_gemm_data_roundtrip(const char* filename,
     return success;
 }
 
-// Helper function to run a complete test of the GEMM function with verification
-bool run_gemm_test_with_verification(const char* filename,
-                                   int n, float* s, size_t bs,
-                                   void* vx, void* vy,
-                                   int nr, int nc) {
-    // Save initial state
-    printf("Verifying initial state save/load...\n");
-    if (!verify_gemm_data_roundtrip(filename, n, s, bs, vx, vy, nr, nc)) {
-        fprintf(stderr, "Initial state verification failed!\n");
-        return false;
-    }
-    
-    // Create a copy of initial s for later comparison
-    size_t s_size = nr * bs * sizeof(float);
-    float* s_original = (float*)malloc(s_size);
-    memcpy(s_original, s, s_size);
-    
-    // Run GEMM
-    printf("Running GEMM operation...\n");
-    ggml_gemm_q4_0_4x4_q8_0(n, s, bs, vx, vy, nr, nc);
-    
-    // Verify result state
-    printf("Verifying result state save/load...\n");
-    bool result = verify_gemm_data_roundtrip(filename, n, s, bs, vx, vy, nr, nc);
-    
-    if (result) {
-        printf("All verifications passed successfully!\n");
-        
-        // Additional verification: Check if GEMM actually modified s
-        bool s_changed = false;
-        for (size_t i = 0; i < s_size/sizeof(float); i++) {
-            if (s_original[i] != s[i]) {
-                s_changed = true;
-                break;
-            }
-        }
-        
-        if (!s_changed) {
-            fprintf(stderr, "Warning: GEMM operation did not modify the output matrix!\n");
-        }
-    }
-    
-    free(s_original);
-    return result;
-}
-
 
 // Test harness to run the isolated GEMM function
 int main() {
@@ -887,7 +841,6 @@ int main() {
     memcpy(s_original, s, s_size);
 
     ggml_gemm_q4_0_4x4_q8_0(n, s, bs, vx, vy, nr, nc);
-
 
     const char* test_data_output_file = "gemm_test_data_output.bin";
     
@@ -933,90 +886,3 @@ int main() {
     return matches ? 0 : 1;
 }
 
-// #include <cstdio>
-// #include <cstdlib>
-// #include <cstring>
-// #include <random>
-
-// // Assuming previous test utility functions are included
-
-// int main() {
-//     // Given dimensions
-//     const int n = 896;
-//     const int nr = 108;
-//     const int nc = 896;
-//     const size_t bs = 896;
-    
-//     // Allocate memory for matrices
-//     float* s = (float*)malloc(nr * bs * sizeof(float));  // Length: 387072 floats
-//     void* vx = malloc(451584);  // Length from provided value
-//     void* vy = malloc(102816);  // Length from provided value
-    
-//     // Initialize with deterministic random data for reproducibility
-//     std::mt19937 rng(42);  // Fixed seed for reproducibility
-    
-//     // Initialize s with small random values
-//     std::uniform_real_distribution<float> s_dist(-1.0f, 1.0f);
-//     for (size_t i = 0; i < nr * bs; i++) {
-//         s[i] = s_dist(rng);
-//     }
-    
-//     // Initialize vx (block_q4_0x4 data)
-//     const int nb = n / QK8_0;
-//     block_q4_0x4* b_vx = (block_q4_0x4*)vx;
-//     std::uniform_real_distribution<float> d_dist(0.1f, 1.0f);  // Positive values for scales
-//     std::uniform_int_distribution<int> q_dist(-8, 7);  // Typical range for 4-bit quantized values
-    
-//     for (int i = 0; i < nb * (nc / 4); i++) {
-//         // Set scales (d values)
-//         for (int j = 0; j < 4; j++) {
-//             b_vx[i].d[j] = GGML_FP32_TO_FP16(d_dist(rng));
-//         }
-//         // Set quantized values
-//         for (int j = 0; j < QK8_0; j++) {
-//             int val1 = q_dist(rng);
-//             int val2 = q_dist(rng);
-//             b_vx[i].qs[j] = (val1 << 4) | (val2 & 0xF);
-//         }
-//     }
-    
-//     // Initialize vy (block_q8_0x4 data)
-//     block_q8_0x4* b_vy = (block_q8_0x4*)vy;
-//     std::uniform_int_distribution<int> q8_dist(-128, 127);  // Full range for 8-bit quantized values
-    
-//     for (int i = 0; i < nb * (nr / 4); i++) {
-//         // Set scales (d values)
-//         for (int j = 0; j < 4; j++) {
-//             b_vy[i].d[j] = GGML_FP32_TO_FP16(d_dist(rng));
-//         }
-//         // Set quantized values
-//         for (int j = 0; j < QK8_0 * 4; j++) {
-//             b_vy[i].qs[j] = q8_dist(rng);
-//         }
-//     }
-    
-//     printf("Running verification with:\n");
-//     printf("n: %d, nr: %d, nc: %d, bs: %zu\n", n, nr, nc, bs);
-//     printf("Matrix sizes:\n");
-//     printf("s: %zu bytes\n", nr * bs * sizeof(float));
-//     printf("vx: %zu bytes\n", 451584);
-//     printf("vy: %zu bytes\n", 102816);
-    
-//     // Run the verification
-//     const char* test_file = "gemm_test_896x896.bin";
-//     bool success = run_gemm_test_with_verification(
-//         test_file,
-//         n, s, bs,
-//         vx, vy,
-//         nr, nc
-//     );
-    
-//     printf("Test %s!\n", success ? "passed" : "failed");
-    
-//     // Cleanup
-//     free(s);
-//     free(vx);
-//     free(vy);
-    
-//     return success ? 0 : 1;
-// }
